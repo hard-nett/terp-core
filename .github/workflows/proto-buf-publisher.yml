@@ -29,7 +29,7 @@ jobs:
       #- uses: bufbuild/buf-breaking-action@v1
       #  with:
       #    input: 'proto'
-      #    against: 'https://github.com/terpnetwork/terp-core.git#branch=master'
+      #    against: 'https://github.com/hard-nett/terp-node.git#branch=master'
 
       # publish proto files
       - uses: bufbuild/buf-push-action@v1

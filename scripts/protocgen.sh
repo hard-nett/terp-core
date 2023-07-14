@@ -26,5 +26,5 @@ buf generate --template buf.gen.doc.yml
 cd ..
 
 # move proto files to the right places
-cp -r github.com/terpnetwork/terp-core/* ./
+cp -r github.com/hard-nett/terp-node/* ./
 rm -rf github.com

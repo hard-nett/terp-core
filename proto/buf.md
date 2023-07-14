@@ -1,6 +1,6 @@
 # Protobufs
 
-This is the public protocol buffers API for [Terpd](https://github.com/terpnetwork/terp-core).
+This is the public protocol buffers API for [Terpd](https://github.com/hard-nett/terp-node).
 ## Download
 
 The `buf` CLI comes with an export command. Use `buf export -h` for details

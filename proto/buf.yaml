@@ -1,5 +1,5 @@
 version: v1
-name: buf.build/terpnetwork/terp-core
+name: buf.build/hard-nett/terp-node
 deps:
   - buf.build/cosmos/cosmos-sdk:v0.47.0
   - buf.build/cosmos/cosmos-proto

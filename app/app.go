@@ -10,6 +10,8 @@ import (
 
 	autocliv1 "cosmossdk.io/api/cosmos/autocli/v1"
 	reflectionv1 "cosmossdk.io/api/cosmos/reflection/v1"
+	errorsmod "cosmossdk.io/errors"
+	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 
 	dbm "github.com/cometbft/cometbft-db"
 	abci "github.com/cometbft/cometbft/abci/types"
@@ -32,7 +34,21 @@ import (
 	"github.com/cosmos/cosmos-sdk/store/streaming"
 	storetypes "github.com/cosmos/cosmos-sdk/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/types/address"
 	"github.com/cosmos/cosmos-sdk/types/module"
+	ibcchanneltypes "github.com/cosmos/ibc-go/v7/modules/core/04-channel/types"
+	"github.com/hard-nett/terp-node/v2/x/feeshare"
+	"github.com/hard-nett/terp-node/v2/x/globalfee"
+	"github.com/hard-nett/terp-node/v2/x/ibchooks"
+	ibchookskeeper "github.com/hard-nett/terp-node/v2/x/ibchooks/keeper"
+	ibchookstypes "github.com/hard-nett/terp-node/v2/x/ibchooks/types"
+	icq "github.com/strangelove-ventures/async-icq/v7"
+	icqkeeper "github.com/strangelove-ventures/async-icq/v7/keeper"
+	icqtypes "github.com/strangelove-ventures/async-icq/v7/types"
+	packetforward "github.com/strangelove-ventures/packet-forward-middleware/v7/router"
+	packetforwardkeeper "github.com/strangelove-ventures/packet-forward-middleware/v7/router/keeper"
+	packetforwardtypes "github.com/strangelove-ventures/packet-forward-middleware/v7/router/types"
+
 	"github.com/cosmos/cosmos-sdk/version"
 	"github.com/cosmos/cosmos-sdk/x/auth"
 	"github.com/cosmos/cosmos-sdk/x/auth/ante"
@@ -120,21 +136,19 @@ import (
 	ibckeeper "github.com/cosmos/ibc-go/v7/modules/core/keeper"
 	ibctm "github.com/cosmos/ibc-go/v7/modules/light-clients/07-tendermint"
 	ibcmock "github.com/cosmos/ibc-go/v7/testing/mock"
+	globalfeekeeper "github.com/hard-nett/terp-node/v2/x/globalfee/keeper"
+	globalfeetypes "github.com/hard-nett/terp-node/v2/x/globalfee/types"
 
-	"github.com/terpnetwork/terp-core/x/tokenfactory/bindings"
+	feesharekeeper "github.com/hard-nett/terp-node/v2/x/feeshare/keeper"
+	feesharetypes "github.com/hard-nett/terp-node/v2/x/feeshare/types"
 
 	"github.com/spf13/cast"
 
 	govclient "github.com/cosmos/cosmos-sdk/x/gov/client"
 
-	"github.com/terpnetwork/terp-core/x/wasm"
-	wasmkeeper "github.com/terpnetwork/terp-core/x/wasm/keeper"
-	wasmtypes "github.com/terpnetwork/terp-core/x/wasm/types"
-
-	// token factory
-	"github.com/terpnetwork/terp-core/x/tokenfactory"
-	tokenfactorykeeper "github.com/terpnetwork/terp-core/x/tokenfactory/keeper"
-	tokenfactorytypes "github.com/terpnetwork/terp-core/x/tokenfactory/types"
+	"github.com/CosmWasm/wasmd/x/wasm"
+	wasmkeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
+	wasmtypes "github.com/CosmWasm/wasmd/x/wasm/types"
 
 	// unnamed import of statik for swagger UI support
 	_ "github.com/cosmos/cosmos-sdk/client/docs/statik" // statik for swagger UI support
@@ -155,7 +169,7 @@ var (
 	ProposalsEnabled = "true"
 	// If set to non-empty string it must be comma-separated list of values that are all a subset
 	// of "EnableAllProposals" (takes precedence over ProposalsEnabled)
-	// https://github.com/terpnetwork/terp-core/blob/02a54d33ff2c064f3539ae12d75d027d9c665f05/x/wasm/internal/types/proposal.go#L28-L34
+	// https://github.com/hard-nett/terp-node/blob/02a54d33ff2c064f3539ae12d75d027d9c665f05/x/wasm/internal/types/proposal.go#L28-L34
 	EnableSpecificProposals = ""
 )
 
@@ -197,6 +211,37 @@ var (
 	Bech32PrefixConsPub = Bech32Prefix + sdk.PrefixValidator + sdk.PrefixConsensus + sdk.PrefixPublic
 )
 
+func init() {
+	SetAddressPrefixes()
+}
+
+// SetAddressPrefixes builds the Config with Bech32 addressPrefix and publKeyPrefix for accounts, validators, and consensus nodes and verifies that addreeses have correct format.
+func SetAddressPrefixes() {
+	config := sdk.GetConfig()
+	config.SetBech32PrefixForAccount(Bech32PrefixAccAddr, Bech32PrefixAccPub)
+	config.SetBech32PrefixForValidator(Bech32PrefixValAddr, Bech32PrefixValPub)
+	config.SetBech32PrefixForConsensusNode(Bech32PrefixConsAddr, Bech32PrefixConsPub)
+
+	// This is copied from the cosmos sdk v0.43.0-beta1
+	// source: https://github.com/cosmos/cosmos-sdk/blob/v0.43.0-beta1/types/address.go#L141
+	config.SetAddressVerifier(func(bytes []byte) error {
+		if len(bytes) == 0 {
+			return errorsmod.Wrap(sdkerrors.ErrUnknownAddress, "addresses cannot be empty")
+		}
+
+		if len(bytes) > address.MaxAddrLen {
+			return errorsmod.Wrapf(sdkerrors.ErrUnknownAddress, "address max length is %d, got %d", address.MaxAddrLen, len(bytes))
+		}
+
+		// TODO: Do we want to allow addresses of lengths other than 20 and 32 bytes?
+		if len(bytes) != 20 && len(bytes) != 32 {
+			return errorsmod.Wrapf(sdkerrors.ErrUnknownAddress, "address length must be 20 or 32 bytes, got %d", len(bytes))
+		}
+
+		return nil
+	})
+}
+
 var (
 	// ModuleBasics defines the module BasicManager is in charge of setting up basic,
 	// non-dependant module elements, such as codec registration
@@ -236,7 +281,10 @@ var (
 		transfer.AppModuleBasic{},
 		ica.AppModuleBasic{},
 		ibcfee.AppModuleBasic{},
-		tokenfactory.AppModuleBasic{},
+		icq.AppModuleBasic{},
+		ibchooks.AppModuleBasic{},
+		packetforward.AppModuleBasic{},
+		feeshare.AppModuleBasic{},
 	)
 
 	// module account permissions
@@ -250,9 +298,9 @@ var (
 		nft.ModuleName:                 nil,
 		ibctransfertypes.ModuleName:    {authtypes.Minter, authtypes.Burner},
 		ibcfeetypes.ModuleName:         nil,
+		icqtypes.ModuleName:            nil,
 		icatypes.ModuleName:            nil,
 		wasm.ModuleName:                {authtypes.Burner},
-		tokenfactorytypes.ModuleName:   {authtypes.Minter, authtypes.Burner},
 	}
 )
 
@@ -292,18 +340,24 @@ type TerpApp struct {
 	FeeGrantKeeper        feegrantkeeper.Keeper
 	GroupKeeper           groupkeeper.Keeper
 	NFTKeeper             nftkeeper.Keeper
+	FeeShareKeeper        feesharekeeper.Keeper
+	GlobalFeeKeeper       globalfeekeeper.Keeper
 	ConsensusParamsKeeper consensusparamkeeper.Keeper
 
 	IBCKeeper           *ibckeeper.Keeper // IBC Keeper must be a pointer in the app, so we can SetRouter on it correctly
 	IBCFeeKeeper        ibcfeekeeper.Keeper
+	IBCHooksKeeper      *ibchookskeeper.Keeper
+	PacketForwardKeeper *packetforwardkeeper.Keeper
+	ICQKeeper           icqkeeper.Keeper
 	ICAControllerKeeper icacontrollerkeeper.Keeper
-	TokenFactoryKeeper  tokenfactorykeeper.Keeper
 	ICAHostKeeper       icahostkeeper.Keeper
 	TransferKeeper      ibctransferkeeper.Keeper
 	WasmKeeper          wasm.Keeper
+	ContractKeeper      *wasmkeeper.PermissionedKeeper
 
 	ScopedIBCKeeper           capabilitykeeper.ScopedKeeper
 	ScopedICAHostKeeper       capabilitykeeper.ScopedKeeper
+	ScopedICQKeeper           capabilitykeeper.ScopedKeeper
 	ScopedICAControllerKeeper capabilitykeeper.ScopedKeeper
 	ScopedTransferKeeper      capabilitykeeper.ScopedKeeper
 	ScopedIBCFeeKeeper        capabilitykeeper.ScopedKeeper
@@ -317,6 +371,10 @@ type TerpApp struct {
 
 	// module configurator
 	configurator module.Configurator
+
+	// Middleware wrapper
+	Ics20WasmHooks   *ibchooks.WasmHooks
+	HooksICS4Wrapper ibchooks.ICS4Middleware
 }
 
 // NewTerpApp returns a reference to an initialized TerpApp.
@@ -365,9 +423,13 @@ func NewTerpApp(
 		ibctransfertypes.StoreKey,
 		ibcfeetypes.StoreKey,
 		wasm.StoreKey,
+		icqtypes.StoreKey,
+		packetforwardtypes.StoreKey,
+		ibchookstypes.StoreKey,
+		feesharetypes.StoreKey,
+		globalfeetypes.StoreKey,
 		icahosttypes.StoreKey,
 		icacontrollertypes.StoreKey,
-		tokenfactorytypes.StoreKey,
 	)
 
 	tkeys := sdk.NewTransientStoreKeys(paramstypes.TStoreKey)
@@ -412,6 +474,7 @@ func NewTerpApp(
 	scopedICAHostKeeper := app.CapabilityKeeper.ScopeToModule(icahosttypes.SubModuleName)
 	scopedICAControllerKeeper := app.CapabilityKeeper.ScopeToModule(icacontrollertypes.SubModuleName)
 	scopedTransferKeeper := app.CapabilityKeeper.ScopeToModule(ibctransfertypes.ModuleName)
+	scopedICQKeeper := app.CapabilityKeeper.ScopeToModule(icqtypes.ModuleName)
 	scopedWasmKeeper := app.CapabilityKeeper.ScopeToModule(wasm.ModuleName)
 	app.CapabilityKeeper.Seal()
 
@@ -469,14 +532,6 @@ func NewTerpApp(
 		keys[slashingtypes.StoreKey],
 		app.StakingKeeper,
 		authtypes.NewModuleAddress(govtypes.ModuleName).String(),
-	)
-
-	app.TokenFactoryKeeper = tokenfactorykeeper.NewKeeper(
-		keys[tokenfactorytypes.StoreKey],
-		app.GetSubspace(tokenfactorytypes.ModuleName),
-		app.AccountKeeper,
-		app.BankKeeper,
-		app.DistrKeeper,
 	)
 
 	invCheckPeriod := cast.ToUint(appOpts.Get(server.FlagInvCheckPeriod))
@@ -570,6 +625,20 @@ func NewTerpApp(
 		app.BankKeeper,
 	)
 
+	// Configure the hooks keeper
+	hooksKeeper := ibchookskeeper.NewKeeper(
+		keys[ibchookstypes.StoreKey],
+	)
+	app.IBCHooksKeeper = &hooksKeeper
+
+	terpPrefix := sdk.GetConfig().GetBech32AccountAddrPrefix()
+	wasmHooks := ibchooks.NewWasmHooks(app.IBCHooksKeeper, app.ContractKeeper, &app.WasmKeeper, terpPrefix) // The contract keeper needs to be set later // The contract keeper needs to be set later
+	app.Ics20WasmHooks = &wasmHooks
+	app.HooksICS4Wrapper = ibchooks.NewICS4Middleware(
+		app.IBCKeeper.ChannelKeeper,
+		app.Ics20WasmHooks,
+	)
+
 	// create evidence keeper with router
 	evidenceKeeper := evidencekeeper.NewKeeper(
 		appCodec,
@@ -582,10 +651,25 @@ func NewTerpApp(
 
 	// IBC Fee Module keeper
 	app.IBCFeeKeeper = ibcfeekeeper.NewKeeper(
-		appCodec, keys[ibcfeetypes.StoreKey],
-		app.IBCKeeper.ChannelKeeper, // may be replaced with IBC middleware
+		appCodec,
+		keys[ibcfeetypes.StoreKey],
+		app.HooksICS4Wrapper, // replaced with IBC middleware
 		app.IBCKeeper.ChannelKeeper,
-		&app.IBCKeeper.PortKeeper, app.AccountKeeper, app.BankKeeper,
+		&app.IBCKeeper.PortKeeper,
+		app.AccountKeeper,
+		app.BankKeeper,
+	)
+
+	// Initialize packet forward middleware router
+	app.PacketForwardKeeper = packetforwardkeeper.NewKeeper(
+		appCodec,
+		keys[packetforwardtypes.StoreKey],
+		app.GetSubspace(packetforwardtypes.ModuleName),
+		app.TransferKeeper, // Will be zero-value here. Reference is set later on with SetTransferKeeper.
+		app.IBCKeeper.ChannelKeeper,
+		app.DistrKeeper,
+		app.BankKeeper,
+		app.IBCKeeper.ChannelKeeper,
 	)
 
 	// Create Transfer Keepers
@@ -593,13 +677,16 @@ func NewTerpApp(
 		appCodec,
 		keys[ibctransfertypes.StoreKey],
 		app.GetSubspace(ibctransfertypes.ModuleName),
-		app.IBCFeeKeeper, // ISC4 Wrapper: fee IBC middleware
+		// The ICS4Wrapper is replaced by the PacketForwardKeeper instead of the channel so that sending can be overridden by the middleware
+		app.PacketForwardKeeper,
 		app.IBCKeeper.ChannelKeeper,
 		&app.IBCKeeper.PortKeeper,
 		app.AccountKeeper,
 		app.BankKeeper,
 		scopedTransferKeeper,
 	)
+
+	app.PacketForwardKeeper.SetTransferKeeper(app.TransferKeeper)
 
 	// IBC Fee Module keeper
 	app.IBCFeeKeeper = ibcfeekeeper.NewKeeper(
@@ -609,11 +696,23 @@ func NewTerpApp(
 		&app.IBCKeeper.PortKeeper, app.AccountKeeper, app.BankKeeper,
 	)
 
+	// ICQ Keeper
+	app.ICQKeeper = icqkeeper.NewKeeper(
+		appCodec,
+		keys[icqtypes.StoreKey],
+		app.GetSubspace(icqtypes.ModuleName),
+		app.IBCKeeper.ChannelKeeper, // may be replaced with middleware
+		app.IBCKeeper.ChannelKeeper,
+		&app.IBCKeeper.PortKeeper,
+		scopedICQKeeper,
+		NewQuerierWrapper(bApp),
+	)
+
 	app.ICAHostKeeper = icahostkeeper.NewKeeper(
 		appCodec,
 		keys[icahosttypes.StoreKey],
 		app.GetSubspace(icahosttypes.SubModuleName),
-		app.IBCFeeKeeper, // use ics29 fee as ics4Wrapper in middleware stack
+		app.HooksICS4Wrapper,
 		app.IBCKeeper.ChannelKeeper,
 		&app.IBCKeeper.PortKeeper,
 		app.AccountKeeper,
@@ -639,16 +738,15 @@ func NewTerpApp(
 
 	// The last arguments can contain custom message handlers, and custom query handlers,
 	// if we want to allow any custom callbacks
-	// See https://github.com/CosmWasm/cosmwasm/blob/main/docs/CAPABILITIES-BUILT-IN.md
-	availableCapabilities := "iterator,staking,stargate,cosmwasm_1_1,cosmwasm_1_2,token_factory"
-	wasmOpts = append(bindings.RegisterCustomPlugins(&app.BankKeeper, &app.TokenFactoryKeeper), wasmOpts...)
+	availableCapabilities := strings.Join(AllCapabilities(), ",")
 	app.WasmKeeper = wasm.NewKeeper(
 		appCodec,
-		keys[wasm.StoreKey],
+		app.keys[wasm.StoreKey],
 		app.AccountKeeper,
 		app.BankKeeper,
 		app.StakingKeeper,
 		distrkeeper.NewQuerier(app.DistrKeeper),
+		app.IBCFeeKeeper,
 		app.IBCKeeper.ChannelKeeper,
 		&app.IBCKeeper.PortKeeper,
 		scopedWasmKeeper,
@@ -662,6 +760,22 @@ func NewTerpApp(
 		wasmOpts...,
 	)
 
+	app.FeeShareKeeper = feesharekeeper.NewKeeper(
+		app.keys[feesharetypes.StoreKey],
+		appCodec,
+		app.BankKeeper,
+		app.WasmKeeper,
+		app.AccountKeeper,
+		authtypes.FeeCollectorName,
+		authtypes.NewModuleAddress(govtypes.ModuleName).String(),
+	)
+
+	app.GlobalFeeKeeper = globalfeekeeper.NewKeeper(
+		appCodec,
+		app.keys[globalfeetypes.StoreKey],
+		authtypes.NewModuleAddress(govtypes.ModuleName).String(),
+	)
+
 	// The gov proposal types can be individually enabled
 	if len(enabledProposals) != 0 {
 		govRouter.AddRoute(wasm.RouterKey, wasm.NewWasmProposalHandler(app.WasmKeeper, enabledProposals))
@@ -673,6 +787,14 @@ func NewTerpApp(
 	var transferStack porttypes.IBCModule
 	transferStack = transfer.NewIBCModule(app.TransferKeeper)
 	transferStack = ibcfee.NewIBCMiddleware(transferStack, app.IBCFeeKeeper)
+	transferStack = ibchooks.NewIBCMiddleware(transferStack, &app.HooksICS4Wrapper)
+	transferStack = packetforward.NewIBCMiddleware(
+		transferStack,
+		app.PacketForwardKeeper,
+		0,
+		packetforwardkeeper.DefaultForwardTransferPacketTimeoutTimestamp,
+		packetforwardkeeper.DefaultRefundTransferPacketTimeoutTimestamp,
+	)
 
 	// Create Interchain Accounts Stack
 	// SendPacket, since it is originating from the application to core IBC:
@@ -695,12 +817,16 @@ func NewTerpApp(
 	wasmStack = wasm.NewIBCHandler(app.WasmKeeper, app.IBCKeeper.ChannelKeeper, app.IBCFeeKeeper)
 	wasmStack = ibcfee.NewIBCMiddleware(wasmStack, app.IBCFeeKeeper)
 
+	// create ICQ module
+	icqModule := icq.NewIBCModule(app.ICQKeeper)
+
 	// Create static IBC router, add app routes, then set and seal it
 	ibcRouter := porttypes.NewRouter().
 		AddRoute(ibctransfertypes.ModuleName, transferStack).
 		AddRoute(wasm.ModuleName, wasmStack).
 		AddRoute(icacontrollertypes.SubModuleName, icaControllerStack).
-		AddRoute(icahosttypes.SubModuleName, icaHostStack)
+		AddRoute(icahosttypes.SubModuleName, icaHostStack).
+		AddRoute(icqtypes.ModuleName, icqModule)
 	app.IBCKeeper.SetRouter(ibcRouter)
 
 	/****  Module Options ****/
@@ -735,12 +861,15 @@ func NewTerpApp(
 		groupmodule.NewAppModule(appCodec, app.GroupKeeper, app.AccountKeeper, app.BankKeeper, app.interfaceRegistry),
 		nftmodule.NewAppModule(appCodec, app.NFTKeeper, app.AccountKeeper, app.BankKeeper, app.interfaceRegistry),
 		consensus.NewAppModule(appCodec, app.ConsensusParamsKeeper),
-		tokenfactory.NewAppModule(app.TokenFactoryKeeper, app.AccountKeeper, app.BankKeeper),
+		feeshare.NewAppModule(app.FeeShareKeeper, app.AccountKeeper, app.GetSubspace(feesharetypes.ModuleName)),
 		wasm.NewAppModule(appCodec, &app.WasmKeeper, app.StakingKeeper, app.AccountKeeper, app.BankKeeper, app.MsgServiceRouter(), app.GetSubspace(wasmtypes.ModuleName)),
 		ibc.NewAppModule(app.IBCKeeper),
 		transfer.NewAppModule(app.TransferKeeper),
 		ibcfee.NewAppModule(app.IBCFeeKeeper),
 		ica.NewAppModule(&app.ICAControllerKeeper, &app.ICAHostKeeper),
+		icq.NewAppModule(app.ICQKeeper),
+		packetforward.NewAppModule(app.PacketForwardKeeper),
+		ibchooks.NewAppModule(app.AccountKeeper),
 		crisis.NewAppModule(app.CrisisKeeper, skipGenesisInvariants, app.GetSubspace(crisistypes.ModuleName)), // always be last to make sure that it checks for all invariants and not only part of them
 	)
 
@@ -760,7 +889,11 @@ func NewTerpApp(
 		ibcexported.ModuleName,
 		icatypes.ModuleName,
 		ibcfeetypes.ModuleName,
-		tokenfactorytypes.ModuleName,
+		icqtypes.ModuleName,
+		packetforwardtypes.ModuleName,
+		feesharetypes.ModuleName,
+		globalfee.ModuleName,
+		ibchookstypes.ModuleName,
 		wasm.ModuleName,
 	)
 
@@ -776,7 +909,11 @@ func NewTerpApp(
 		ibcexported.ModuleName,
 		icatypes.ModuleName,
 		ibcfeetypes.ModuleName,
-		tokenfactorytypes.ModuleName,
+		icqtypes.ModuleName,
+		packetforwardtypes.ModuleName,
+		feesharetypes.ModuleName,
+		globalfee.ModuleName,
+		ibchookstypes.ModuleName,
 		wasm.ModuleName,
 	)
 
@@ -799,8 +936,12 @@ func NewTerpApp(
 		ibcexported.ModuleName,
 		icatypes.ModuleName,
 		ibcfeetypes.ModuleName,
+		icqtypes.ModuleName,
+		packetforwardtypes.ModuleName,
+		ibchookstypes.ModuleName,
+		feesharetypes.ModuleName,
+		globalfee.ModuleName,
 		// wasm after ibc transfer
-		tokenfactorytypes.ModuleName,
 		wasm.ModuleName,
 	}
 	app.ModuleManager.SetOrderInitGenesis(genesisModuleOrder...)
@@ -868,6 +1009,10 @@ func NewTerpApp(
 	app.ScopedICAHostKeeper = scopedICAHostKeeper
 	app.ScopedICAControllerKeeper = scopedICAControllerKeeper
 
+	// set the contract keeper for the Ics20WasmHooks
+	app.ContractKeeper = wasmkeeper.NewDefaultPermissionKeeper(app.WasmKeeper)
+	app.Ics20WasmHooks.ContractKeeper = app.ContractKeeper
+
 	// In v0.46, the SDK introduces _postHandlers_. PostHandlers are like
 	// antehandlers, but are run _after_ the `runMsgs` execution. They are also
 	// defined as a chain, and have the same signature as antehandlers.
@@ -924,6 +1069,18 @@ func NewTerpApp(
 	return app
 }
 
+func GetDefaultBypassFeeMessages() []string {
+	return []string{
+		// IBC
+		sdk.MsgTypeURL(&ibcchanneltypes.MsgRecvPacket{}),
+		sdk.MsgTypeURL(&ibcchanneltypes.MsgAcknowledgement{}),
+		sdk.MsgTypeURL(&ibcclienttypes.MsgUpdateClient{}),
+		sdk.MsgTypeURL(&ibctransfertypes.MsgTransfer{}),
+		sdk.MsgTypeURL(&ibcchanneltypes.MsgTimeout{}),
+		sdk.MsgTypeURL(&ibcchanneltypes.MsgTimeoutOnClose{}),
+	}
+}
+
 func (app *TerpApp) setAnteHandler(txConfig client.TxConfig, wasmConfig wasmtypes.WasmConfig, txCounterStoreKey storetypes.StoreKey) {
 	anteHandler, err := NewAnteHandler(
 		HandlerOptions{
@@ -934,9 +1091,14 @@ func (app *TerpApp) setAnteHandler(txConfig client.TxConfig, wasmConfig wasmtype
 				FeegrantKeeper:  app.FeeGrantKeeper,
 				SigGasConsumer:  ante.DefaultSigVerificationGasConsumer,
 			},
+			FeeShareKeeper:    app.FeeShareKeeper,
+			BankKeeperFork:    app.BankKeeper, // since we need extra methods
 			IBCKeeper:         app.IBCKeeper,
 			WasmConfig:        &wasmConfig,
 			TXCounterStoreKey: txCounterStoreKey,
+
+			BypassMinFeeMsgTypes: GetDefaultBypassFeeMessages(),
+			GlobalFeeKeeper:      app.GlobalFeeKeeper,
 		},
 	)
 	if err != nil {
@@ -1133,9 +1295,11 @@ func initParamsKeeper(appCodec codec.BinaryCodec, legacyAmino *codec.LegacyAmino
 	paramsKeeper.Subspace(crisistypes.ModuleName)
 	paramsKeeper.Subspace(ibctransfertypes.ModuleName)
 	paramsKeeper.Subspace(ibcexported.ModuleName)
-	paramsKeeper.Subspace(tokenfactorytypes.ModuleName)
 	paramsKeeper.Subspace(icahosttypes.SubModuleName)
 	paramsKeeper.Subspace(icacontrollertypes.SubModuleName)
+	paramsKeeper.Subspace(icqtypes.ModuleName)
+	paramsKeeper.Subspace(packetforwardtypes.ModuleName)
+	paramsKeeper.Subspace(feesharetypes.ModuleName)
 	paramsKeeper.Subspace(wasm.ModuleName)
 
 	return paramsKeeper

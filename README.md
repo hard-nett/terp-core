@@ -1,7 +1,7 @@
 
 # Terp-Core
 
-[![license](https://img.shields.io/github/license/terpnetwork/terp-core.svg)](https://github.com/terpnetwork/terp-core/blob/main/LICENSE)
+[![license](https://img.shields.io/github/license/hard-nett/terp-node.svg)](https://github.com/hard-nett/terp-node/blob/main/LICENSE)
 
 This repository hosts `Terp-Core`, the Daemon binary logic of [Terp-Network](https://terp.network).
 
@@ -74,7 +74,7 @@ your use case.
 make install
 make test
 ```
-if you are using a linux without X or headless linux, look at [this article](https://ahelpme.com/linux/dbusexception-could-not-get-owner-of-name-org-freedesktop-secrets-no-such-name) or [#31](https://github.com/terpnetwork/terp-core/issues/31#issuecomment-577058321).
+if you are using a linux without X or headless linux, look at [this article](https://ahelpme.com/linux/dbusexception-could-not-get-owner-of-name-org-freedesktop-secrets-no-such-name) or [#31](https://github.com/hard-nett/terp-node/issues/31#issuecomment-577058321).
 
 ## Protobuf
 The protobuf files for this project are published automatically to the [buf repository](https://buf.build/) to make integration easier:
@@ -93,7 +93,7 @@ The generators are executed within a Docker [container](./contrib/prototools-doc
 
 We provide a docker image to help with test setups. There are two modes to use it
 
-Build: `docker build -t terpnetwork/terp-core:latest .`  or pull from dockerhub
+Build: `docker build -t hard-nett/terp-node:latest .`  or pull from dockerhub
 
 ### Dev server
 
@@ -110,12 +110,12 @@ docker volume rm -f terpd_data
 docker run --rm -it \
     -e PASSWORD=xxxxxxxxx \
     --mount type=volume,source=terpd_data,target=/root \
-    terpnetwork/terp-core:latest /opt/setup_terpd.sh cosmos1pkptre7fdkl6gfrzlesjjvhxhlc3r4gmmk8rs6
+    hard-nett/terp-node:latest /opt/setup_terpd.sh cosmos1pkptre7fdkl6gfrzlesjjvhxhlc3r4gmmk8rs6
 
 # This will start both terpd and rest-server, both are logged
 docker run --rm -it -p 26657:26657 -p 26656:26656 -p 1317:1317 \
     --mount type=volume,source=terpd_data,target=/root \
-    terpnetwork/terp-core:latest /opt/run_terpd.sh
+    hard-nett/terp-node:latest /opt/run_terpd.sh
 ```
 
 ### CI
@@ -128,7 +128,7 @@ rm -rf ./template && mkdir ./template
 docker run --rm -it \
     -e PASSWORD=xxxxxxxxx \
     --mount type=bind,source=$(pwd)/template,target=/root \
-    terpnetwork/terp-core:latest /opt/setup_terpd.sh cosmos1pkptre7fdkl6gfrzlesjjvhxhlc3r4gmmk8rs6
+    hard-nett/terp-node:latest /opt/setup_terpd.sh cosmos1pkptre7fdkl6gfrzlesjjvhxhlc3r4gmmk8rs6
 
 sudo chown -R $(id -u):$(id -g) ./template
 
@@ -139,12 +139,12 @@ docker volume rm -f terpd_data
 docker run --rm -it -p 26657:26657 -p 26656:26656 -p 9090:9090 \
     --mount type=bind,source=$(pwd)/template,target=/template \
     --mount type=volume,source=terpd_data,target=/root \
-    terpnetwork/terp-core:latest /opt/run_terpd.sh /template
+    hard-nett/terp-node:latest /opt/run_terpd.sh /template
 
 # RESTART CHAIN with existing state
 docker run --rm -it -p 26657:26657 -p 26656:26656 -p 1317:1317 \
     --mount type=volume,source=terpd_data,target=/root \
-    terpnetwork/terp-core:latest /opt/run_terpd.sh
+    hard-nett/terp-node:latest /opt/run_terpd.sh
 ```
 
 ## Runtime flags
@@ -155,10 +155,10 @@ to the configuration.
 
 Available flags:
  
-* `-X github.com/terpnetwork/terp-core/app.NodeDir=.terp` - set the config/data directory for the node (default `~/.terp`)
-* `-X github.com/terpnetwork/terp-core/app.Bech32Prefix=terp` - set the bech32 prefix for all accounts (default `terp`)
-* `-X github.com/terpnetwork/terp-core/app.ProposalsEnabled=true` - enable all x/wasm governance proposals (default `false`)
-* `-X github.com/terpnetwork/terp-core/app.EnableSpecificProposals=MigrateContract,UpdateAdmin,ClearAdmin` - 
+* `-X github.com/hard-nett/terp-node/app.NodeDir=.terp` - set the config/data directory for the node (default `~/.terp`)
+* `-X github.com/hard-nett/terp-node/app.Bech32Prefix=terp` - set the bech32 prefix for all accounts (default `terp`)
+* `-X github.com/hard-nett/terp-node/app.ProposalsEnabled=true` - enable all x/wasm governance proposals (default `false`)
+* `-X github.com/hard-nett/terp-node/app.EnableSpecificProposals=MigrateContract,UpdateAdmin,ClearAdmin` - 
     enable a subset of the x/wasm governance proposal types (overrides `ProposalsEnabled`)
 
 Examples:
